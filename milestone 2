@@ -1,0 +1,351 @@
+# ==============================================
+# 1. Imports & Setup
+# ==============================================
+from datetime import datetime, timedelta
+import random
+import asyncio
+import math
+from typing import Optional, List
+
+from fastapi import FastAPI, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    DateTime,
+    ForeignKey,
+)
+from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
+
+# ==============================================
+# 2. Database Configuration
+# ==============================================
+DATABASE_URL = "sqlite:///./flights.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# ==============================================
+# 3. FastAPI App
+# ==============================================
+app = FastAPI(title="Flight Booking - Dynamic Pricing (Milestone 2)")
+
+# ==============================================
+# 4. Database Models
+# ==============================================
+class Flight(Base):
+    __tablename__ = "flights"
+    id = Column(Integer, primary_key=True, index=True)
+    flight_id = Column(String, unique=True, index=True, nullable=False)
+    airline_name = Column(String, nullable=False)
+    origin = Column(String, nullable=False)
+    destination = Column(String, nullable=False)
+    departure_time = Column(DateTime, nullable=False)
+    arrival_time = Column(DateTime, nullable=False)
+    base_fare = Column(Float, nullable=False)
+    total_seats = Column(Integer, nullable=False)
+    seats_available = Column(Integer, nullable=False)
+    airline_tier = Column(Integer, default=1)
+    demand_index = Column(Float, default=1.0)
+    fare_history = relationship("FareHistory", back_populates="flight")
+
+class Booking(Base):
+    __tablename__ = "bookings"
+    id = Column(Integer, primary_key=True, index=True)
+    pnr = Column(String, unique=True, index=True, nullable=False)
+    flight_id = Column(String, ForeignKey("flights.flight_id"), nullable=False)
+    passenger_name = Column(String, nullable=False)
+    seat_no = Column(String, nullable=True)
+    booked_at = Column(DateTime, default=datetime.utcnow)
+
+class FareHistory(Base):
+    __tablename__ = "fare_history"
+    id = Column(Integer, primary_key=True, index=True)
+    flight_id = Column(String, ForeignKey("flights.flight_id"), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    price = Column(Float, nullable=False)
+    flight = relationship("Flight", back_populates="fare_history")
+
+Base.metadata.create_all(bind=engine)
+
+# ==============================================
+# 5. Pydantic Schemas
+# ==============================================
+class FlightCreate(BaseModel):
+    flight_id: str
+    airline_name: str
+    origin: str
+    destination: str
+    departure_time: datetime
+    arrival_time: datetime
+    base_fare: float
+    total_seats: int
+    seats_available: Optional[int] = None
+    airline_tier: Optional[int] = 1
+
+class FlightResponse(BaseModel):
+    flight_id: str
+    airline_name: str
+    origin: str
+    destination: str
+    departure_time: datetime
+    arrival_time: datetime
+    base_fare: float
+    total_seats: int
+    seats_available: int
+
+class BookingRequest(BaseModel):
+    flight_id: str
+    passenger_name: str
+    seat_no: Optional[str] = None
+
+class BookingResponse(BaseModel):
+    pnr: str
+    flight_id: str
+    passenger_name: str
+    seat_no: Optional[str]
+
+class PriceResponse(BaseModel):
+    flight_id: str
+    base_fare: float
+    dynamic_price: float
+    seats_available: int
+    total_seats: int
+    demand_index: float
+
+# ==============================================
+# 6. Generate unique PNR for each booking
+# ==============================================
+def generate_pnr() -> str:
+    return f"PNR{random.randint(100000, 999999)}"
+
+def check_seat_availability(flight: Flight):
+    if flight.seats_available <= 0:
+        raise HTTPException(status_code=400, detail="No seats available")
+
+# ==============================================
+# 7. Database Dependency
+# ==============================================
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ==============================================
+# 8. Dynamic Pricing Function
+# ==============================================
+def calculate_dynamic_price(
+    base_fare: float,
+    seats_available: int,
+    total_seats: int,
+    departure_time: datetime,
+    demand_index: float = 1.0,
+    airline_tier: int = 1,
+) -> float:
+    if total_seats <= 0:
+        return base_fare
+    seats_left_ratio = seats_available / total_seats
+    seat_factor = 0.6 * (1 - math.sqrt(max(0.0, seats_left_ratio)))
+    now = datetime.utcnow()
+    days_until = max(0, (departure_time - now).days)
+    if days_until <= 0:
+        time_factor = 0.6
+    elif days_until <= 3:
+        time_factor = 0.4
+    elif days_until <= 7:
+        time_factor = 0.2
+    elif days_until <= 30:
+        time_factor = 0.05
+    else:
+        time_factor = 0.0
+    demand_factor = float(demand_index)
+    tier_premium = 0.05 * (airline_tier - 1)
+    total_factor = 1.0 + seat_factor + time_factor + (demand_factor - 1.0) + tier_premium
+    total_factor = max(0.5, min(total_factor, 4.0))
+    new_price = base_fare * total_factor
+    return round(max(0.0, new_price), 2)
+
+# ==============================================
+# 9. Flight Management APIs
+# ==============================================
+@app.post("/admin/flights", response_model=FlightResponse, status_code=status.HTTP_201_CREATED)
+def add_flight(f: FlightCreate, db: Session = Depends(get_db)):
+    existing = db.query(Flight).filter(Flight.flight_id == f.flight_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Flight with this flight_id already exists")
+    seats_available = f.seats_available if f.seats_available is not None else f.total_seats
+    flight = Flight(
+        flight_id=f.flight_id,
+        airline_name=f.airline_name,
+        origin=f.origin,
+        destination=f.destination,
+        departure_time=f.departure_time,
+        arrival_time=f.arrival_time,
+        base_fare=f.base_fare,
+        total_seats=f.total_seats,
+        seats_available=seats_available,
+        airline_tier=f.airline_tier,
+        demand_index=1.0,
+    )
+    db.add(flight)
+    db.commit()
+    db.refresh(flight)
+    return FlightResponse(
+        flight_id=flight.flight_id,
+        airline_name=flight.airline_name,
+        origin=flight.origin,
+        destination=flight.destination,
+        departure_time=flight.departure_time,
+        arrival_time=flight.arrival_time,
+        base_fare=flight.base_fare,
+        total_seats=flight.total_seats,
+        seats_available=flight.seats_available,
+    )
+
+@app.get("/flights", response_model=List[FlightResponse])
+def list_flights(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
+    flights = db.query(Flight).offset(skip).limit(limit).all()
+    return [
+        FlightResponse(
+            flight_id=f.flight_id,
+            airline_name=f.airline_name,
+            origin=f.origin,
+            destination=f.destination,
+            departure_time=f.departure_time,
+            arrival_time=f.arrival_time,
+            base_fare=f.base_fare,
+            total_seats=f.total_seats,
+            seats_available=f.seats_available,
+        )
+        for f in flights
+    ]
+
+# ==============================================
+# 10. Dynamic Pricing API
+# ==============================================
+@app.get("/dynamic_price/{flight_id}", response_model=PriceResponse)
+def get_dynamic_price(flight_id: str, db: Session = Depends(get_db)):
+    flight = db.query(Flight).filter(Flight.flight_id == flight_id).first()
+    if not flight:
+        raise HTTPException(status_code=404, detail="Flight not found")
+    price = calculate_dynamic_price(
+        base_fare=flight.base_fare,
+        seats_available=flight.seats_available,
+        total_seats=flight.total_seats,
+        departure_time=flight.departure_time,
+        demand_index=flight.demand_index,
+        airline_tier=flight.airline_tier,
+    )
+    fh = FareHistory(flight_id=flight.flight_id, price=price)
+    db.add(fh)
+    db.commit()
+    return PriceResponse(
+        flight_id=flight.flight_id,
+        base_fare=flight.base_fare,
+        dynamic_price=price,
+        seats_available=flight.seats_available,
+        total_seats=flight.total_seats,
+        demand_index=flight.demand_index,
+    )
+
+# ==============================================
+# 11. Booking API
+# ==============================================
+@app.post("/bookings", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
+def create_booking(req: BookingRequest, db: Session = Depends(get_db)):
+    flight = db.query(Flight).filter(Flight.flight_id == req.flight_id).first()
+    if not flight:
+        raise HTTPException(status_code=404, detail="Flight not found")
+    check_seat_availability(flight)
+    flight.seats_available -= 1
+    pnr = generate_pnr()
+    booking = Booking(pnr=pnr, flight_id=req.flight_id, passenger_name=req.passenger_name, seat_no=req.seat_no)
+    db.add(booking)
+    db.add(flight)
+    db.commit()
+    db.refresh(booking)
+    return BookingResponse(pnr=booking.pnr, flight_id=booking.flight_id, passenger_name=booking.passenger_name, seat_no=booking.seat_no)
+
+# ==============================================
+# 12. Fare History API
+# ==============================================
+@app.get("/fare_history/{flight_id}")
+def get_fare_history(flight_id: str, limit: int = 50, db: Session = Depends(get_db)):
+    rows = db.query(FareHistory).filter(FareHistory.flight_id == flight_id).order_by(FareHistory.timestamp.desc()).limit(limit).all()
+    return [{"timestamp": r.timestamp.isoformat(), "price": r.price} for r in rows]
+
+# ==============================================
+# 13. Health Check API
+# ==============================================
+@app.get("/health")
+def health(db: Session = Depends(get_db)):
+    total_flights = db.query(Flight).count()
+    total_bookings = db.query(Booking).count()
+    return {"status": "healthy", "total_flights": total_flights, "total_bookings": total_bookings}
+
+# ==============================================
+# 14. Background Simulator
+# ==============================================
+async def simulate_market_step_once(db: Session):
+    flights = db.query(Flight).all()
+    if not flights:
+        return
+    count = max(1, int(len(flights) * 0.3))
+    chosen = random.sample(flights, count)
+    for f in chosen:
+        seat_delta = random.choice([-2, -1, 0, 1, 2])
+        new_seats = max(0, min(f.total_seats, f.seats_available + seat_delta))
+        demand_drift = random.uniform(-0.08, 0.08)
+        new_demand = max(0.5, min(2.5, f.demand_index + demand_drift))
+        f.seats_available = new_seats
+        f.demand_index = new_demand
+        new_price = calculate_dynamic_price(
+            base_fare=f.base_fare,
+            seats_available=f.seats_available,
+            total_seats=f.total_seats,
+            departure_time=f.departure_time,
+            demand_index=f.demand_index,
+            airline_tier=f.airline_tier,
+        )
+        fh = FareHistory(flight_id=f.flight_id, price=new_price)
+        db.add(f)
+        db.add(fh)
+    db.commit()
+
+async def scheduler_loop(interval_seconds: int = 60):
+    while True:
+        try:
+            db = SessionLocal()
+            await simulate_market_step_once(db)
+        except Exception as e:
+            print("Simulator error:", e)
+        finally:
+            db.close()
+        await asyncio.sleep(interval_seconds)
+
+# ==============================================
+# 15. Startup/Shutdown Events
+# ==============================================
+@app.on_event("startup")
+async def startup_event():
+    app.state.simulator_task = asyncio.create_task(scheduler_loop(interval_seconds=60))
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    task = getattr(app.state, "simulator_task", None)
+    if task:
+        task.cancel()
+
+# ==============================================
+# 16. Run Uvicorn
+# ==============================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("fastapi_dynamic_pricing:app", host="127.0.0.1", port=8000, reload=True)
+
+
