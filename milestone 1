@@ -1,0 +1,201 @@
+-- Drop tables it is used for if they exist to reset database
+DROP TABLE IF EXISTS Bookings;
+DROP TABLE IF EXISTS Passengers;
+DROP TABLE IF EXISTS Flights;
+DROP TABLE IF EXISTS Airlines;
+DROP TABLE IF EXISTS Airports;
+
+-- Create database if not exists and use it
+DROP DATABASE IF EXISTS flight_db;
+CREATE DATABASE flight_db;
+USE flight_db;
+
+-- Creating an Airports table
+CREATE TABLE Airports (
+    airport_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    city VARCHAR(100) NOT NULL,
+    country VARCHAR(100) NOT NULL,
+    code VARCHAR(10) NOT NULL UNIQUE
+);
+
+-- Create the  Airlines table
+CREATE TABLE Airlines (
+    airline_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(10) NOT NULL UNIQUE
+);
+
+-- Creating  an Flights table
+CREATE TABLE Flights (
+    flight_id INT AUTO_INCREMENT PRIMARY KEY,
+    airline_id INT NOT NULL,
+    flight_number VARCHAR(20) NOT NULL,
+    departure_airport_id INT NOT NULL,
+    arrival_airport_id INT NOT NULL,
+    departure_time DATETIME NOT NULL,
+    arrival_time DATETIME NOT NULL,
+    CONSTRAINT fk_airline FOREIGN KEY (airline_id) REFERENCES Airlines(airline_id),
+    CONSTRAINT fk_departure_airport FOREIGN KEY (departure_airport_id) REFERENCES Airports(airport_id),
+    CONSTRAINT fk_arrival_airport FOREIGN KEY (arrival_airport_id) REFERENCES Airports(airport_id),
+    CONSTRAINT chk_times CHECK (arrival_time > departure_time)
+);
+
+-- Creating the  Passengers table-
+CREATE TABLE Passengers (
+    passenger_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    phone VARCHAR(20)
+);
+
+-- Creating the Bookings table for passengers.
+
+CREATE TABLE Bookings (
+    booking_id INT AUTO_INCREMENT PRIMARY KEY,
+    flight_id INT NOT NULL,
+    passenger_id INT NOT NULL,
+    seat_number VARCHAR(10) NOT NULL,
+    booking_date DATE NOT NULL,
+    CONSTRAINT fk_flight FOREIGN KEY (flight_id) REFERENCES Flights(flight_id),
+    CONSTRAINT fk_passenger FOREIGN KEY (passenger_id) REFERENCES Passengers(passenger_id),
+    UNIQUE (flight_id, seat_number)
+);
+
+-- Inserting sample airports data:
+
+INSERT INTO Airports (name, city, country, code) VALUES
+('John F Kennedy International', 'chennai', 'mumbai', 'delhi'),
+('Los Angeles International', 'Los Angeles', 'USA', 'Londan'),
+('Heathrow Airport', 'London', 'UK', 'LHR'),
+('Charles de Gaulle Airport', 'Paris', 'France', 'Canada');
+
+
+-- Inserting the sample airlines flights;
+
+INSERT INTO Airlines (name, code) VALUES
+('American Airlines', 'AA'),
+('British Airways', 'BA'),
+('Delta Airlines', 'DL');
+
+-- Insert sample flights
+INSERT INTO Flights (airline_id, flight_number, departure_airport_id, arrival_airport_id, departure_time, arrival_time) VALUES
+(1, 'AA100', 1, 2, '2025-11-01 08:00:00', '2025-11-01 11:00:00'),
+(2, 'BA200', 3, 4, '2025-11-02 09:00:00', '2025-11-02 11:30:00'),
+(3, 'DL300', 2, 1, '2025-11-03 15:00:00', '2025-11-03 23:00:00');
+
+-- Insert sample passengers
+INSERT INTO Passengers (name, email, phone)
+VALUES ('Test User', 'testuser@example.com', '0001112222');
+
+-- Insert sample bookings
+INSERT INTO Bookings (flight_id, passenger_id, seat_number, booking_date)
+VALUES
+(1, 1, '12A', '2025-10-01');
+
+-- Additional inserts for practice
+
+-- New airport
+INSERT INTO Airports (name, city, country, code)
+VALUES ('Changi Airport', 'Singapore', 'Singapore', 'SIN');
+
+-- New airline
+INSERT INTO Airlines (name, code)
+VALUES ('Singapore Airlines', 'SQ');
+
+-- New passenger
+INSERT INTO Passengers (name, email, phone)
+VALUES ('siva', 'siva.lee@example.com', '9876543210');
+
+-- New flight
+INSERT INTO Flights (airline_id, flight_number, departure_airport_id, arrival_airport_id, departure_time, arrival_time)
+VALUES (4, 'SQ001', 5, 1, '2025-11-05 22:00:00', '2025-11-06 06:00:00');
+
+-- New booking
+INSERT INTO Bookings (flight_id, passenger_id, seat_number, booking_date)
+VALUES (4, 2, '10A', CURDATE());
+
+-- Update passenger email
+UPDATE Passengers
+SET email = 'ravi.new@example.com'
+WHERE passenger_id = 1;
+
+-- Update flight departure time
+UPDATE Flights
+SET departure_time = '2025-11-01 09:00:00'
+WHERE flight_id = 1;
+
+-- Change booking seat number
+UPDATE Bookings
+SET seat_number = '15F'
+WHERE booking_id = 1;
+
+-- Delete passenger (only if no bookings)
+DELETE FROM Passengers
+WHERE passenger_id = 99;
+
+-- Delete flight (only if not referenced)
+DELETE FROM Flights
+WHERE flight_id = 99;
+
+-- SQL queries ,Queries for practicess
+
+-- a. List all bookings with passenger and flight details
+SELECT 
+    b.booking_id, p.name AS passenger_name, f.flight_number,
+    al.name AS airline, b.seat_number, b.booking_date
+FROM Bookings b
+JOIN Passengers p ON b.passenger_id = p.passenger_id
+JOIN Flights f ON b.flight_id = f.flight_id
+JOIN Airlines al ON f.airline_id = al.airline_id;
+
+-- b. List all flights with departure and arrival airports
+SELECT 
+    f.flight_number, 
+    al.name AS airline,
+    d.code AS departure_airport, 
+    a.code AS arrival_airport,
+    f.departure_time, 
+    f.arrival_time
+FROM Flights f
+JOIN Airlines al ON f.airline_id = al.airline_id
+JOIN Airports d ON f.departure_airport_id = d.airport_id
+JOIN Airports a ON f.arrival_airport_id = a.airport_id;
+
+-- Count bookings per passenger:
+
+SELECT p.name, COUNT(*) AS total_bookings
+FROM Bookings b
+JOIN Passengers p ON b.passenger_id = p.passenger_id
+GROUP BY p.passenger_id;
+
+-- Transaction example: addding the  passenger and booking atomically
+
+START TRANSACTION;
+
+INSERT INTO Passengers (name, email, phone)
+VALUES ('Emily Clark', 'emily@example.com', '2223334444');
+
+INSERT INTO Bookings (flight_id, passenger_id, seat_number, booking_date)
+VALUES (2, LAST_INSERT_ID(), '17A', CURDATE());
+
+COMMIT;
+
+-- Constraintts violation examples,
+
+-- a. NOT NULL / UNIQUE constraint violation (uncomment to test)
+-- INSERT INTO Passengers (name, phone)
+-- VALUES ('Test User', '0001112222'); -- Fails: email NOT NULL
+
+-- INSERT INTO Airports (name, city, country, code)
+-- VALUES ('Fake Airport', 'Fake City', 'Fake Country', 'JFK'); -- Fails: duplicate code
+
+-- Passengers who booked more than 1 flight
+SELECT name FROM Passengers
+WHERE passenger_id IN (
+    SELECT passenger_id FROM Bookings
+    GROUP BY passenger_id
+    HAVING COUNT(*) > 1
+);
+
+
