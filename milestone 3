@@ -1,6 +1,6 @@
 
 """
-FastAPI app upgraded for Milestone 3: Booking Workflow & Transaction Management
+ Milestone 3: Booking Workflow & Transaction Management
 Features added:
 - Booking schema extended (status, price, passenger contact, timestamps)
 - Quote endpoint that returns dynamic price
@@ -331,5 +331,6 @@ def health(db: Session = Depends(get_db)):
 
 
 # Run the app with: uvicorn fastapi_milestone3:app --reload
+
 
 
