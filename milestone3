@@ -331,3 +331,4 @@ def health(db: Session = Depends(get_db)):
 
 
 # Run the app with: uvicorn fastapi_milestone3:app --reload
+
